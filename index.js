@@ -3,7 +3,10 @@ const {
     sequelize,
     User,
     Good,
-    Scan
+    Scan,
+    Track,
+    ScanUser,
+    ScanGood
 } = require("./db/models");
 
 const { saveHtmlDoc } = require("./src/checker");
@@ -98,6 +101,44 @@ const start = async () =>
                     return bot.sendMessage(chatId, "Отправь запрос для поиска");
                 }
 
+                case CommandName.QUERY_HISTORY: {
+                    CommandHistory.deleteCommandHistoryIfExist(user);
+
+                    const su = await ScanUser.findAll({
+                        where: { userId: dbUser.id },
+                        include: [Scan]
+                    });
+
+                    const answer = su.map((suItem, index) =>
+                        `${index+1}) ${suItem.Scan.query_text}`).join('\n');
+
+                    return bot.sendMessage(chatId, answer);
+                }
+
+                case CommandName.ADD_QUERY_TRACK: {
+
+
+                }
+                case CommandName.QUERY_TRACK_LIST: {
+                    const scans = await dbUser.getScans();
+
+                    const tracks = await Track.findAll({
+                        where: { userId: dbUser.id, scanId: [scans.map(scan => scan.id)] },
+                        include: [Scan]
+                    });
+
+                    const answer = tracks.map((track, index) =>
+                        `${index+1}) ${track.Scan.query_text}`).join('\n');
+
+                    return bot.sendMessage(chatId, answer.length > 0 ? answer : StatusMessages.NOT_FOUND);
+                }
+
+                case CommandName.DELETE_MY_SCAN: {
+                    CommandHistory.deleteCommandHistoryIfExist(user);
+                    CommandHistory.addOrUpdateCommandHistory(user, CommandName.DELETE_MY_SCAN);
+                    return bot.sendMessage(chatId, "Укажите текст запроса на сканирования");
+                }
+
                 case AdminCommandName.STOP_ALL_CORN_JOBS: {
                     if (user.id !== admin_user_id)
                         return bot.sendMessage(chatId, StatusMessages.NOT_ALLOW_FOR_YOUR_ROLE)
@@ -122,25 +163,32 @@ const start = async () =>
                         switch (existCommand.command) {
                             case CommandName.SCAN_BY_QUERY: {
                                 if(existCommand.step == 0)  {
+                                    if(text.length === 0) return bot.sendMessage(chatId, StatusMessages.NOT_CORRECT_DATA)
+
+
                                     const search_query_part = `d/list/q-${text}/`;
                                     const searchOrderByNewest = '?search%5Border%5D=created_at:desc';
                                     const url = `${baseTargetUrl}/${search_query_part}${searchOrderByNewest}`;
 
                                     console.log(url);
 
-                                    const window = (await getJsDomByUrl(url, true)).window;
+                                    const window = (await getJsDomByUrl(url, false)).window;
                                     const document = window.document;
-                                    window.scrollTo(0, document.body.scrollHeight);
-
                                     const items = document.querySelectorAll(".css-1sw7q4x");
 
+                                    let addedCount = 0;
+
+                                    const newGoods = [];
 
                                     for(let item of items) {
+
                                         const id = item.getAttribute('id');
+
                                         if(!item.querySelector('.css-16v5mdi.er34gjf0')) {
                                             writeLog(`error: id - ${id}`);
                                             continue;
                                         }
+
                                         const name = item.querySelector('.css-16v5mdi.er34gjf0').textContent;
 
                                         const url =  item.querySelector('.css-rc5s2u') ?
@@ -148,34 +196,19 @@ const start = async () =>
 
 
                                         console.log(`${baseTargetUrl}${url}`)
-                                          const doc = (await getJsDomByUrl(`${baseTargetUrl}${url}`, false)).window.document;
 
-                                        const img_url = doc.querySelector('.swiper-zoom-container > img').getAttribute('src');
+                                        const doc = (await getJsDomByUrl(`${baseTargetUrl}${url}`, false)).window.document;
 
-
-
-                                        // const img_selectors = '.css-oukcj3 .css-rc5s2u > .css-qfzx1y >.css-1venxj6 >.css-1ut25fa > .css-pn1izb > .css-gl6djm > [sizes="150px"]';
-                                        // const img_url = item.querySelector(img_selectors) ?
-                                        //     item.querySelector(img_selectors).getAttribute('src') : '';
+                                        const img_url = doc.querySelector("[data-testid='swiper-image']") ?
+                                            doc.querySelector("[data-testid='swiper-image']").getAttribute('src') : null;
 
                                         let price_uah = 0;
-                                        const price_uah_raw_array = item.querySelector('[data-testid="ad-price"]') ?
-                                            item.querySelector('[data-testid="ad-price"]').childNodes : null;
-
-                                        if(price_uah_raw_array === null) {
-                                            price_uah = 0;
-                                        } else {
-                                            price_uah_raw_array.forEach(e => console.log(`--- ${e.textContent}`));
-
-                                            console.log(price_uah_raw_array.length)
-                                            if(price_uah_raw_array.length > 4) {
-                                                console.log(price_uah_raw_array[2].textContent);
-                                                price_uah = fromTextToMoney(price_uah_raw_array[2].textContent);
-                                            } else {
-                                                price_uah = fromTextToMoney(price_uah_raw_array[price_uah_raw_array.length - 1].textContent);
-                                            }
+                                        const price_uah_raw_array = doc.querySelector('[data-testid="ad-price-container"] > h3') ?
+                                            doc.querySelector('[data-testid="ad-price-container"] > h3').textContent : null;
+                                        if(price_uah_raw_array === null) { price_uah = 0; }
+                                        else {
+                                            price_uah = fromTextToMoney(price_uah_raw_array);
                                         }
-
 
                                         const state = item.querySelector('.css-3lkihg > span') ?
                                             item.querySelector('.css-3lkihg > span').textContent : null;
@@ -189,7 +222,7 @@ const start = async () =>
                                             .textContent.split('-');
 
                                         const location = locationDate[0];
-                                        const post_created_at_raw = locationDate[1];
+                                        const post_created_at_raw = locationDate.length <= 2 ? locationDate[1] : locationDate[locationDate.length-1];
 
                                         let post_created_at = "";
                                         const toDayPrefix = 'Сегодня в ';
@@ -223,9 +256,37 @@ const start = async () =>
                                                     post_created_at
                                                 }
                                             }
-                                        )
+                                        );
 
+                                        newGoods.push(newGood);
+
+                                        addedCount++;
                                     }
+
+
+
+                                    const [scan, created] = await Scan.findOrCreate({
+                                        where: { query_text: text },
+                                        defaults: {
+                                            query_text: text,
+                                            last_scan_at: moment().format(),
+                                        }
+                                    });
+
+                                    const su = await ScanUser.findOrCreate({
+                                        where: { scanId: scan.id, userId: dbUser.id },
+                                        defaults:  { scanId: scan.id, userId: dbUser.id }
+                                    });
+
+                                    for (let good of newGoods) {
+                                        const sg = await ScanGood.findOrCreate({
+                                            where: { scanId: scan.id, goodId: good.id },
+                                            defaults:  { scanId: scan.id, goodId: good.id }
+                                        });
+                                    }
+
+                                    console.log(`=========================== count ${items.length} ===========================`)
+                                    console.log(`=========================== added ${addedCount} ===========================`)
 
                                     CommandHistory.deleteCommandHistoryIfExist(user);
                                     return bot.sendMessage(chatId,StatusMessages.SUCCESS_ADD_TO_TRACK_LIST);
@@ -234,6 +295,13 @@ const start = async () =>
                                     return bot.sendMessage(chatId, StatusMessages.SUCCESS_ADD_TO_TRACK_LIST);
                                 }
                                 break;
+                            }
+                            case CommandName.DELETE_MY_SCAN: {
+                                const scan = await Scan.findOne({ where: { query_text: text }});
+                                const su = await ScanUser.destroy({
+                                    where: { scanId: scan.id, userId: dbUser.id },
+                                });
+                                return bot.sendMessage(chatId, StatusMessages.SUCCESS_DELETED);
                             }
                         }
                     }

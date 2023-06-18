@@ -10,45 +10,6 @@ const fs = require("fs");
 const { JSDOM } = jsdom;
 
 
-const getAllCategories = async () => {
-    // const limit2 = 3;
-    // let document1 = (await getJsDomByUrl(`https://rock-star.com.ua/keyboards/digital-piano/?limit=${limit2}`)).window.document;
-    // const containers1 = document1.querySelectorAll(".product-thumb");
-    // console.logs(containers1.length, `limit = ${limit2}`);
-    //
-    //
-    // return;
-
-    try {
-        let dom = await getJsDomByUrl(url);
-        let result = [];
-        let list = dom.window.document.querySelectorAll(".second-nav > .item");
-        for(let item of list) {
-            const li = item.querySelector(".item--link-l1");
-            result.push({
-                name: li.textContent.replace('\n', '').trim(),
-                url: li.getAttribute('href')
-            });
-        }
-        return result;
-    }
-    catch (err) {
-        console.error(err);
-    }
-}
-const saveCategoriesIfNotExist = async () => {
-    const categoryList = await getAllCategories();
-    console.log(categoryList);
-    for (let category of categoryList) {
-        const existCategory = await Category.findOne({
-            where: { name: category.name }
-        });
-        if(!existCategory)
-            await Category.create({name: category.name, url: category.url});
-    }
-    return Category.findAll();
-}
-
 
 const saveHtmlDoc = (html) => {
     var fs = require('fs');
@@ -57,6 +18,7 @@ const saveHtmlDoc = (html) => {
         console.log('Saved!');
     })
 }
+
 const getJsDomByUrl = async (url, isSave = false) => {
     const response = await axios.get(`${url}`, {
         responseType: 'document',
@@ -92,172 +54,8 @@ const getJsDomByUrl = async (url, isSave = false) => {
     return new JSDOM(`${html}`, { resources: 'usable'});
 }
 
-const parseGood = async (container,
-                         PageType = GoodsPageType.LIST,
-                         currencyBuy = null,
-                         categoryId = null,
-                         GoodUrl = null
-) => {
-    const name = container.querySelector(PageType.NameSelector).textContent.replace(/\s\s+/g, ' ');
-    const url = container.querySelector(PageType.UrlSelector).getAttribute('href');
-    const price_uah = fromTextToMoney(container.querySelector(PageType.PriceUah).textContent);
-
-    let price_usd = 0;
-    let article = null;
-    if(PageType == GoodsPageType.LIST) {
-        price_usd = (price_uah / currencyBuy).toFixed(2);
-    }
-    else if(PageType == GoodsPageType.SHOW) {
-        article = container.querySelector('.product-info__flex-vendor').textContent;
-        price_usd = fromTextToMoney(container.querySelector(PageType.PriceUsd).textContent);
-    }
-
-    const [good, created] = await Good.findOrCreate({
-        where: { name },
-        defaults: {
-            name,
-            url: PageType == GoodsPageType.LIST ? url : GoodUrl,
-            price_uah,
-            price_usd,
-            dollar: currencyBuy,
-            categoryId: categoryId,
-            article
-        }
-    });
-    return {good, newPrice: {uah: price_uah, usd: price_usd}};
-}
-
-const commitPriceChange = async (good, newPrice, changedGoods, minPercent = 0) => {
-    if(good.price_uah != newPrice.uah) {
-        const absoluteDiff = Math.round(newPrice.uah - good.price_uah);
-        const percentDiff = Math.round((absoluteDiff * 100) / good.price_uah);
-        const char = absoluteDiff > 0 ? "+" : '-';
-
-
-        if(Math.abs(percentDiff) >= minPercent || minPercent === 0) {
-            changedGoods.push({
-                good,
-                oldPriceUah: good.price_uah,
-                newPriceUah: newPrice.uah,
-                diff: { absoluteDiff, percentDiff, char }
-            });
-
-            await Good.update({ price_uah: newPrice.uah, price_usd: newPrice.uah }, {
-                where: { id: good.id }
-            });
-
-            await History.create({
-                new_price_uah: newPrice.uah,
-                old_price_uah: good.price_uah,
-                new_price_usd: newPrice.usd,
-                old_price_usd: good.price_usd,
-                goodId: good.id
-            })
-        }
-        return {
-            absoluteDiff,
-            percentDiff
-        }
-    }
-}
-
-const getGoods = async (totalPage, currentPage, category, currencyBuy, changedGoods) => {
-    const document = (await getJsDomByUrl(`${category.url}?page=${currentPage}`, false)).window.document;
-    const containers = document.querySelectorAll(".prod-item");
-
-    // console.logs(containers.length, `totalPage = ${totalPage}`, `limit = ${limit}`);
-    console.log(containers.length, `totalPage = ${totalPage}`);
-
-    for (let container of containers) {
-        const {good, newPrice} = await parseGood(container, GoodsPageType.LIST, currencyBuy, category.id);
-        await commitPriceChange(good, newPrice, changedGoods)
-    }
-    return changedGoods;
-}
-
-// get all the goods by category
-//TODO: make only one requst for get pagination btn
-const getAllGoodsByCategory = async (category) => {
-    console.log(' ================================= start scan =================================');
-
-    let document = (await getJsDomByUrl(`${category.url}`)).window.document;
-    const paginateBtn = document.querySelector(".pagination > .pag-item:nth-last-child(2)");
-    let totalPage = 0;
-    if(paginateBtn)
-        totalPage = paginateBtn.textContent;
-
-    const perPage = 24;
-    let currentPage = 1;
-    // const limit = totalPage * perPage;
-    // const limit = 10;
-    // let urlWithLimit = `${category.url}?limit=${limit}`;
-
-    const response = await axios.get('https://api.privatbank.ua/p24api/pubinfo?json&exchange&coursid=5');
-    const currencyBuy = response.data[1].buy;
-
-    let changedGoods = [];
-
-    if(totalPage == 0) {
-        changedGoods = await getGoods(
-            totalPage,
-            currentPage,
-            category,
-            currencyBuy,
-            changedGoods
-        );
-    } else {
-        while (currentPage <= totalPage) {
-            // try {
-            //     const path1 = `C:/Users/jekar/Desktop/telegram_bot_jabko/123.html`;
-            //     document = fs.readFileSync(path1, {encoding: 'utf-8'});
-            //     document = new JSDOM(`${document}`).window.document;
-            // } catch (ex) {
-            //     console.error(ex)
-            // }
-            changedGoods = await getGoods(
-                totalPage,
-                currentPage,
-                category,
-                currencyBuy,
-                changedGoods
-            );
-            currentPage++;
-            console.log(`current page = ${currentPage}`);
-        }
-    }
-    // const limit2 = 3;
-    // document = (await getJsDomByUrl(`https://rock-star.com.ua/keyboards/digital-piano/?limit=${limit2}`)).window.document;
-    // const containers1 = document.querySelectorAll(".product-thumb");
-    // console.logs(containers1.length, `limit = ${limit2}`);
-    console.log(' ================================= scan is end =================================');
-    return changedGoods;
-}
-
-const checkTrackedGoodPrice = async (bot) => {
-    const users = await User.findAll({
-        include: [{ model: TrackedGood, include: Good}]
-    })
-    for (let user of users) {
-        const trackedGoods = user.tracked_goods;
-        const changes = [];
-        for (let trackedGood of trackedGoods) {
-            const document = (await getJsDomByUrl(`${trackedGood.good.url}`, false)).window.document;
-            const {good, newPrice} = await parseGood(document, GoodsPageType.SHOW, null, trackedGood.good.categoryId, trackedGood.good.url);
-            await commitPriceChange(good, newPrice, changes, trackedGood.min_percent);
-        }
-        if(changes.length > 0) {
-            const msg = goodChangesMsgFormat(changes);
-            bot.sendMessage(user.chatId, msg, {parse_mode: 'HTML'});
-        }
-    }
-}
 
 module.exports = {
-    saveCategoriesIfNotExist,
-    getAllGoodsByCategory,
-    parseGood,
     getJsDomByUrl,
-    commitPriceChange,
-    checkTrackedGoodPrice,
     saveHtmlDoc
 }

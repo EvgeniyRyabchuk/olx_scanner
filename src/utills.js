@@ -6,7 +6,12 @@ const {getJsDomByUrl, parseGood, commitPriceChange} = require("./checker");
 const CommandName = {
     START: '/start',
     SCAN_BY_QUERY: '/scan_by_query',
+    QUERY_HISTORY: '/query_history',
+    ADD_QUERY_TRACK: '/add_query_track',
+    QUERY_TRACK_LIST: '/query_track_list',
+    DELETE_MY_SCAN: '/delete_my_scan',
 }
+
 const AdminCommandName = {
     STOP_ALL_CORN_JOBS: '/stop_all_corn_jobs',
     START_ALL_CORN_JOBS: '/start_all_corn_jobs',
@@ -45,7 +50,10 @@ const BotCommand = [
         default_answer: 'Выберите категорию',
 
     },
-
+    {
+        name: CommandName.QUERY_HISTORY,
+        description: 'Get Query History',
+    },
 ];
 
 const getDefAnswer = (text) => BotCommand.find(bc => bc.name === text).default_answer;

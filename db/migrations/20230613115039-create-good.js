@@ -10,14 +10,16 @@ module.exports = {
         type: Sequelize.INTEGER
       },
       name: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+        allowNull: false
       },
       url: {
-        type: Sequelize.STRING
+        type: Sequelize.STRING,
+        allowNull: false
       },
       img_url: {
         type: Sequelize.STRING,
-        allowNull: false
+        allowNull: true
       },
       location: {
         type: Sequelize.STRING,
@@ -29,9 +31,11 @@ module.exports = {
       },
       fixed: {
         type: Sequelize.STRING,
+        allowNull: true
       },
       post_created_at: {
-        type: Sequelize.DATE
+        type: Sequelize.DATE,
+        allowNull: false
       },
       price_uah: {
         type: Sequelize.DECIMAL
