@@ -4,11 +4,17 @@ const url = 'https://jabko.ua/zaporizhzhia/rus/';
 const { GoodsPageType, fromTextToMoney} = require('./utills');
 const axios = require('axios')
 const jsdom = require("jsdom");
-const {Category, Good, History, User, TrackedGood} = require("../db/models");
+const {Category, Good, History, User, TrackedGood, Scan, ScanUser, ScanGood} = require("../db/models");
 const path = require('path');
 const fs = require("fs");
+const writeLog = require("./logger");
+const moment = require("moment");
+const {all} = require("axios");
 const { JSDOM } = jsdom;
 
+require('dotenv').config();
+
+const baseTargetUrl = process.env.BASE_TARGET_URL;
 
 
 const saveHtmlDoc = (html) => {
@@ -55,7 +61,171 @@ const getJsDomByUrl = async (url, isSave = false) => {
 }
 
 
+const checkNewGoods = async (queryText, dbUser) => {
+    const search_query_part = `d/list/q-${queryText}/`;
+    const searchOrderByNewest = '?search%5Border%5D=created_at:desc';
+    const url = `${baseTargetUrl}/${search_query_part}${searchOrderByNewest}`;
+
+    console.log(url);
+
+    let window = (await getJsDomByUrl(url, false)).window;
+    let document = window.document;
+
+
+    const pageList = document.querySelectorAll('.pagination-list > li');
+    const totalPageCount = parseInt(pageList[pageList.length - 1].querySelector('a').textContent);
+    let currentPage = 1;
+
+    console.log(totalPageCount);
+
+    let addedCount = 0;
+    const newGoods = [];
+
+    while (currentPage <= totalPageCount) {
+
+        if(currentPage > 1) {
+            const currentUrl = `${url}&page=${currentPage}`;
+            window = (await getJsDomByUrl(currentUrl, false)).window;
+            document = window.document;
+        }
+
+        const items = document.querySelectorAll(".css-1sw7q4x");
+
+        console.log(items.length);
+
+        const allGoodIds = [];
+
+        for(let item of items) allGoodIds.push(item.getAttribute('id'));
+
+        const finded = await Good.findAll({
+            where: { id: allGoodIds}
+        });
+
+        console.log(`all goods = ${allGoodIds.length} | finded = ${finded.length}`);
+
+        if(allGoodIds.length === 0) { console.log("no goods"); break; }
+
+        if(finded.length === allGoodIds.length) {
+            // all is up to date
+            console.log("all is up to date")
+            break;
+        }
+
+        // get only new goods
+
+        console.log("changes is exist");
+
+        for(let item of items) {
+
+            const id = item.getAttribute('id');
+
+            if(finded.find(f => f.id == id)) continue;
+
+            //todo: fix
+            const name = item.querySelector('.css-16v5mdi.er34gjf0') ?
+                item.querySelector('.css-16v5mdi.er34gjf0').textContent : null;
+
+            if(name === null) continue;
+
+            console.log(name);
+
+            const url = item.querySelector('.css-rc5s2u') ?
+                item.querySelector('.css-rc5s2u').getAttribute('href') : '';
+
+            console.log(`${baseTargetUrl}${url}`)
+
+            const doc = (await getJsDomByUrl(`${baseTargetUrl}${url}`, false)).window.document;
+
+            const img_url = doc.querySelector("[data-testid='swiper-image']") ?
+                doc.querySelector("[data-testid='swiper-image']").getAttribute('src') : null;
+
+            let price_uah = 0;
+            const price_uah_raw_array = doc.querySelector('[data-testid="ad-price-container"] > h3') ?
+                doc.querySelector('[data-testid="ad-price-container"] > h3').textContent : null;
+            if(price_uah_raw_array === null) { price_uah = 0; }
+            else {
+                price_uah = fromTextToMoney(price_uah_raw_array);
+            }
+
+            const state = item.querySelector('.css-3lkihg > span') ?
+                item.querySelector('.css-3lkihg > span').textContent : null;
+
+            // const fixed = item.querySelector('.css-10b0gli.er34gjf0:nth-child(2)') ?
+            //     item.querySelector('.css-10b0gli.er34gjf0:nth-child(2)').textContent : null;
+            const fixed = item.querySelector('.css-1vxklie') ?
+                item.querySelector('.css-1vxklie').textContent : null;
+
+            const locationDate = item.querySelector('.css-veheph.er34gjf0')
+                .textContent.split('-');
+
+            const location = locationDate[0];
+            const post_created_at_raw = locationDate.length <= 2 ? locationDate[1] : locationDate[locationDate.length-1];
+
+            let post_created_at = "";
+            const toDayPrefix = 'Сегодня в ';
+            if(post_created_at_raw.includes(toDayPrefix)) {
+                const time = post_created_at_raw.replace(toDayPrefix, '') + ":00";
+                const date = moment().format('DD-MM-YYYY');
+                // DD-MM-YYYY hh:mm
+                post_created_at = moment(`${date}${time}`, 'DD-MM-YYYY hh:mm:SS').format();
+                console.log(`${date}${time}`)
+            }
+            else {
+                post_created_at = moment(post_created_at_raw, 'DD MMMM YYYY').format();
+                console.log(post_created_at);
+            }
+
+            writeLog(JSON.stringify({
+                id, name, url, img_url, price_uah, state, fixed, location, post_created_at
+            }))
+
+            const newGood = await Good.create({
+                id,
+                name,
+                url,
+                img_url,
+                price_uah,
+                state,
+                fixed,
+                location,
+                post_created_at
+            });
+
+            newGoods.push(newGood);
+            addedCount++;
+        }
+
+        if(finded.length === 0) currentPage++; else break;
+    }
+
+    const [scan, created] = await Scan.findOrCreate({
+        where: { query_text: queryText },
+        defaults: {
+            query_text: queryText,
+            last_scan_at: moment().format(),
+        }
+    });
+
+    const su = await ScanUser.findOrCreate({
+        where: { scanId: scan.id, userId: dbUser.id },
+        defaults:  { scanId: scan.id, userId: dbUser.id }
+    });
+
+    for (let good of newGoods) {
+        const sg = await ScanGood.findOrCreate({
+            where: { scanId: scan.id, goodId: good.id },
+            defaults:  { scanId: scan.id, goodId: good.id }
+        });
+    }
+
+    // console.log(`=========================== count ${allGoodIds.length} ===========================`)
+    console.log(`=========================== added ${addedCount} ===========================`)
+
+    return {newGoods};
+}
+
 module.exports = {
     getJsDomByUrl,
-    saveHtmlDoc
+    saveHtmlDoc,
+    checkNewGoods
 }

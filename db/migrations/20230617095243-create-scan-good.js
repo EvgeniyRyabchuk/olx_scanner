@@ -15,7 +15,7 @@ module.exports = {
         references: {
           model: 'Scans',
           key: 'id'
-        }
+        },
       },
       goodId: {
         allowNull: false,
@@ -23,7 +23,8 @@ module.exports = {
         references: {
           model: 'Goods',
           key: 'id'
-        }
+        },
+        onDelete: 'CASCADE',
       },
       createdAt: {
         allowNull: false,

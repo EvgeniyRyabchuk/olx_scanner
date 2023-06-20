@@ -9,7 +9,7 @@ const {
     ScanGood
 } = require("./db/models");
 
-const { saveHtmlDoc } = require("./src/checker");
+const { saveHtmlDoc, checkNewGoods } = require("./src/checker");
 
 const {
     StatusMessages,
@@ -60,8 +60,27 @@ const start = async () =>
 
 
     // every day scan
-    const priceCheckerTask = cron.schedule('0 * * * *', async () => {
+    const priceCheckerTask = cron.schedule('* * * * *', async () => {
         console.log('cron job is begin');
+
+        const users = await User.findAll();
+
+        for (let user of users) {
+            const scans = await user.getScans();
+
+            if(scans.length === 0) return;
+
+            for (let scan of scans) {
+                const {newGoods} = await checkNewGoods(scan.query_text, user);
+                await Scan.update({ last_scan_at: moment().format()}, { where: {id: scan.id}});
+                //TODO: currency checker
+                newGoods.forEach(item => {
+                    const msg = `<a href="${baseTargetUrl+item.url}">${item.name}</a> 
+- ${item.price_uah}грн [${moment(item.post_created_at).format("DD-MM-YYYY")}]`;
+                    bot.sendMessage(user.chatId, msg,{ parse_mode: 'HTML' });
+                })
+            }
+        }
 
         console.log('cron job end');
     });
@@ -72,13 +91,11 @@ const start = async () =>
         const text = msg.text;
         const chatId = msg.chat.id;
         const user = msg.from;
-        // const member = await bot.getChatMember(chatId, user.id);
         const dbUser = await User.findOne({ where: { id: user.id}});
 
-        // user must be registered in system
         if(!dbUser && text != CommandName.START) return bot.sendMessage(chatId, '/start - to register');
 
-        // try {
+        try {
             switch (text) {
                 case CommandName.START: {
                     CommandHistory.deleteCommandHistoryIfExist(user);
@@ -108,7 +125,7 @@ const start = async () =>
                         where: { userId: dbUser.id },
                         include: [Scan]
                     });
-
+                    if(su.length === 0) return bot.sendMessage(chatId, StatusMessages.NOT_FOUND);
                     const answer = su.map((suItem, index) =>
                         `${index+1}) ${suItem.Scan.query_text}`).join('\n');
 
@@ -164,135 +181,9 @@ const start = async () =>
                             case CommandName.SCAN_BY_QUERY: {
                                 if(existCommand.step == 0)  {
                                     if(text.length === 0) return bot.sendMessage(chatId, StatusMessages.NOT_CORRECT_DATA)
-
-
-                                    const search_query_part = `d/list/q-${text}/`;
-                                    const searchOrderByNewest = '?search%5Border%5D=created_at:desc';
-                                    const url = `${baseTargetUrl}/${search_query_part}${searchOrderByNewest}`;
-
-                                    console.log(url);
-
-                                    const window = (await getJsDomByUrl(url, false)).window;
-                                    const document = window.document;
-                                    const items = document.querySelectorAll(".css-1sw7q4x");
-
-                                    let addedCount = 0;
-
-                                    const newGoods = [];
-
-                                    for(let item of items) {
-
-                                        const id = item.getAttribute('id');
-
-                                        if(!item.querySelector('.css-16v5mdi.er34gjf0')) {
-                                            writeLog(`error: id - ${id}`);
-                                            continue;
-                                        }
-
-                                        const name = item.querySelector('.css-16v5mdi.er34gjf0').textContent;
-
-                                        const url =  item.querySelector('.css-rc5s2u') ?
-                                            item.querySelector('.css-rc5s2u').getAttribute('href') : '';
-
-
-                                        console.log(`${baseTargetUrl}${url}`)
-
-                                        const doc = (await getJsDomByUrl(`${baseTargetUrl}${url}`, false)).window.document;
-
-                                        const img_url = doc.querySelector("[data-testid='swiper-image']") ?
-                                            doc.querySelector("[data-testid='swiper-image']").getAttribute('src') : null;
-
-                                        let price_uah = 0;
-                                        const price_uah_raw_array = doc.querySelector('[data-testid="ad-price-container"] > h3') ?
-                                            doc.querySelector('[data-testid="ad-price-container"] > h3').textContent : null;
-                                        if(price_uah_raw_array === null) { price_uah = 0; }
-                                        else {
-                                            price_uah = fromTextToMoney(price_uah_raw_array);
-                                        }
-
-                                        const state = item.querySelector('.css-3lkihg > span') ?
-                                            item.querySelector('.css-3lkihg > span').textContent : null;
-
-                                        // const fixed = item.querySelector('.css-10b0gli.er34gjf0:nth-child(2)') ?
-                                        //     item.querySelector('.css-10b0gli.er34gjf0:nth-child(2)').textContent : null;
-                                        const fixed = item.querySelector('.css-1vxklie') ?
-                                            item.querySelector('.css-1vxklie').textContent : null;
-
-                                        const locationDate = item.querySelector('.css-veheph.er34gjf0')
-                                            .textContent.split('-');
-
-                                        const location = locationDate[0];
-                                        const post_created_at_raw = locationDate.length <= 2 ? locationDate[1] : locationDate[locationDate.length-1];
-
-                                        let post_created_at = "";
-                                        const toDayPrefix = 'Сегодня в ';
-                                        if(post_created_at_raw.includes(toDayPrefix)) {
-                                            const time = post_created_at_raw.replace(toDayPrefix, '') + ":00";
-                                            const date = moment().format('DD-MM-YYYY');
-                                            // DD-MM-YYYY hh:mm
-                                            post_created_at = moment(`${date}${time}`, 'DD-MM-YYYY hh:mm:SS').format();
-                                            console.log(`${date}${time}`)
-                                        }
-                                        else {
-                                            post_created_at = moment(post_created_at_raw, 'DD MMMM YYYY').format();
-                                            console.log(post_created_at);
-                                        }
-
-                                        writeLog(JSON.stringify({
-                                            id, name, url, img_url, price_uah, state, fixed, location, post_created_at
-                                        }))
-
-                                        const [newGood, created] = await Good.findOrCreate({
-                                                where: {id},
-                                                defaults: {
-                                                    id,
-                                                    name,
-                                                    url,
-                                                    img_url,
-                                                    price_uah,
-                                                    state,
-                                                    fixed,
-                                                    location,
-                                                    post_created_at
-                                                }
-                                            }
-                                        );
-
-                                        newGoods.push(newGood);
-
-                                        addedCount++;
-                                    }
-
-
-
-                                    const [scan, created] = await Scan.findOrCreate({
-                                        where: { query_text: text },
-                                        defaults: {
-                                            query_text: text,
-                                            last_scan_at: moment().format(),
-                                        }
-                                    });
-
-                                    const su = await ScanUser.findOrCreate({
-                                        where: { scanId: scan.id, userId: dbUser.id },
-                                        defaults:  { scanId: scan.id, userId: dbUser.id }
-                                    });
-
-                                    for (let good of newGoods) {
-                                        const sg = await ScanGood.findOrCreate({
-                                            where: { scanId: scan.id, goodId: good.id },
-                                            defaults:  { scanId: scan.id, goodId: good.id }
-                                        });
-                                    }
-
-                                    console.log(`=========================== count ${items.length} ===========================`)
-                                    console.log(`=========================== added ${addedCount} ===========================`)
-
+                                    await checkNewGoods(text, dbUser);
                                     CommandHistory.deleteCommandHistoryIfExist(user);
                                     return bot.sendMessage(chatId,StatusMessages.SUCCESS_ADD_TO_TRACK_LIST);
-                                }
-                                if(existCommand.step == 1) {
-                                    return bot.sendMessage(chatId, StatusMessages.SUCCESS_ADD_TO_TRACK_LIST);
                                 }
                                 break;
                             }
@@ -308,10 +199,10 @@ const start = async () =>
                     return bot.sendMessage(chatId, StatusMessages.COMMAND_NOT_FOUND);
                 }
             }
-        // } catch (e) {
-        //     writeLog(`Error ${e}`);
-        //     return bot.sendMessage(chatId, StatusMessages.ERROR);
-        // }
+        } catch (e) {
+            writeLog(`Error ${e}`);
+            return bot.sendMessage(chatId, StatusMessages.ERROR);
+        }
     })
 
     bot.on('callback_query', async (query) =>{
